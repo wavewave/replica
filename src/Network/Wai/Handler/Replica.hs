@@ -110,7 +110,16 @@ app :: forall st.
   -> ConnectionOptions
   -> Middleware
   -> st
-  -> (Context -> st -> IO (Maybe (V.HTML, st, Event -> Maybe (IO ()))))
+  -> ( Context ->
+       st ->
+       IO
+         ( Maybe
+             ( Either
+                 (st, V.HTML -> Event -> Maybe (IO ()))
+                 (V.HTML, st, Event -> Maybe (IO ()))
+             )
+         )
+     )
   -> Application
 app index options middleware initial step
   = websocketsOr options (websocketApp initial step) (middleware backupApp)
@@ -123,7 +132,16 @@ app index options middleware initial step
 
 websocketApp :: forall st.
      st
-  -> (Context -> st -> IO (Maybe (V.HTML, st, Event -> Maybe (IO ()))))
+  -> ( Context ->
+       st ->
+       IO
+         ( Maybe
+             ( Either
+                 (st, V.HTML -> Event -> Maybe (IO ()))
+                 (V.HTML, st, Event -> Maybe (IO ()))
+             )
+         )
+     )
   -> ServerApp
 websocketApp initial step pendingConn = do
   conn <- acceptRequest pendingConn
@@ -184,12 +202,26 @@ websocketApp initial step pendingConn = do
   where
     closeCodeInternalError = 1011
 
-    go :: Connection -> Context -> TVar (Maybe (Event -> Maybe (IO ()))) -> TVar (Maybe Int) -> Maybe V.HTML -> st -> Int -> IO ()
+    go ::
+      Connection ->
+      Context ->
+      TVar (Maybe (Event -> Maybe (IO ()))) ->
+      TVar (Maybe Int) ->
+      Maybe V.HTML ->
+      st ->
+      Int ->
+      IO ()
     go conn ctx chan cf oldDom st serverFrame = do
       r <- step ctx st
       case r of
         Nothing -> pure ()
-        Just (newDom, next, fire) -> do
+        Just (Left (next, fire)) -> do
+          case oldDom of
+            Nothing -> pure () -- doesn't make sense
+            Just oldDom' -> do
+              atomically $ writeTVar chan (Just (fire oldDom'))
+              go conn ctx chan cf oldDom next (serverFrame + 1)
+        Just (Right (newDom, next, fire)) -> do
           clientFrame <- atomically $ do
             a <- readTVar cf
             writeTVar cf Nothing
